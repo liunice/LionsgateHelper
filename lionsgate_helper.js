@@ -185,12 +185,12 @@ hostname = *.starz.com
         const confBody = readICloud(`${SUBTITLES_DIR}/${series_name}/S${season}/subtitle.conf`)
         if (!confBody) return null
 
-        const m = new RegExp(`S${season}E${episode}:${key}=(.+)`, 'i').exec(confBody)
+        const m = new RegExp(`^S${season}E${episode}:${key}=(.+)`, 'im').exec(confBody)
         if (m) {
             return m[1]
         }
         else {
-            const m0 = new RegExp(`${key}=(.+)`, 'i').exec(confBody)
+            const m0 = new RegExp(`^${key}=(.+)`, 'im').exec(confBody)
             return m0 ? m0[1] : null
         }
     }
@@ -199,7 +199,7 @@ hostname = *.starz.com
         const confBody = readICloud(`${SUBTITLES_DIR}/helper.conf`)
         if (!confBody) return null
 
-        const m = new RegExp(`${key}=(.+)`, 'i').exec(confBody)
+        const m = new RegExp(`^${key}=(.+)`, 'im').exec(confBody)
         if (m) {
             return m[1]
         }
