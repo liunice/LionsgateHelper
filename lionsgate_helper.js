@@ -31,6 +31,7 @@ hostname = *.starz.com
     const SUBTITLES_DIR = 'Subtitles'
     const FILENAME_TV_DB = 'DO_NOT_DELETE_lionsgate_tv.db'
     const TV_DB_THIN_DAYS = 3
+    const FN_SUB_SYNCER_DB = 'sub_syncer.db'
 
     if (/\/metadata-service\/play\/.*?\/content\?contentIds=/.test($request.url)) { //\d+&products=starzplay
         try {
@@ -59,6 +60,9 @@ hostname = *.starz.com
         const episode_id = root['contentId']
         checkPlayingEpisode(episode_id)
 
+        // create subtitle.conf if it's not there
+        createConfFile()
+
         $.done({ body: JSON.stringify(root) })
     }
     else if (/\/assets\/.*?\/Apple\/(spgb|dezmund|spfr)_.*?\.m3u8$/.test($request.url)) {
@@ -80,6 +84,11 @@ hostname = *.starz.com
         }
     }
     else if (/\/assets\/.*?.vtt$/.test($request.url)) {
+        // save manifest for sub syncer
+        if (getSubtitleConfig('subsyncer.enabled') == 'true') {
+            writeSubSyncerDB($request.url)
+        }
+
         if (!checkSubtitleExists()) {
             $.done({})
             return
@@ -134,10 +143,7 @@ hostname = *.starz.com
 
         // write to iCloud
         const path = `${SUBTITLES_DIR}/${FILENAME_TV_DB}`
-        const buffer = new TextEncoder().encode(JSON.stringify(newData))
-        if (!$iCloud.writeFile(buffer, path)) {
-            console.log(`iCloud file write failed, path: ${path}`)
-        }
+        writeICloud(path, JSON.stringify(newData))
     }
 
     function checkPlayingEpisode(episode_id) {
@@ -150,10 +156,14 @@ hostname = *.starz.com
             notify(SCRIPT_NAME, '正在播放剧集', `[${item[0]}] S${item[1]}E${item[2]}`)
         }
         else {
-            $.setdata('', `series_name@${SCRIPT_NAME}`)
-            $.setdata('', `season_no@${SCRIPT_NAME}`)
-            $.setdata('', `ep_no@${SCRIPT_NAME}`)
+            clearPlaying()
         }
+    }
+
+    function clearPlaying() {
+        $.setdata('', `series_name@${SCRIPT_NAME}`)
+        $.setdata('', `season_no@${SCRIPT_NAME}`)
+        $.setdata('', `ep_no@${SCRIPT_NAME}`)
     }
 
     function saveEpisodes(series_name, content) {
@@ -171,11 +181,61 @@ hostname = *.starz.com
         $.log(`${content['childContent'].length} episode(s) saved to db`)
     }
 
+    function writeSubSyncerDB(manifest_url) {
+        const series_name = $.getdata(`series_name@${SCRIPT_NAME}`)
+        const season = $.getdata(`season_no@${SCRIPT_NAME}`)
+        const episode = $.getdata(`ep_no@${SCRIPT_NAME}`)
+        if (!series_name) return
+
+        const path = `${SUBTITLES_DIR}/${series_name}/${FN_SUB_SYNCER_DB}`
+
+        // read
+        let root
+        try {
+            const body = readICloud(path)
+            if (body) {
+                root = JSON.parse(body)
+            }
+        }
+        catch (e) {
+            $.log(e)
+        }
+        if (!root) {
+            root = { 'manifests': {} }
+        }
+        else if (root['manifests'][`S${season}E${episode}`]) {
+            // 不进行覆盖，防止错误数据写入导致数据混乱
+            return
+        }
+
+        // update
+        root['manifests'][`S${season}E${episode}`] = manifest_url
+
+        // write
+        if (writeICloud(path, JSON.stringify(root))) {
+            notify(SCRIPT_NAME, '播放记录已写入本地数据库', `[${series_name}] S${season}E${episode}`)
+        }
+    }
+
     function notify(title, subtitle, message) {
         const enabled = getScriptConfig('notify') || 'true'
         if (enabled.toLowerCase() == 'true') {
             $.msg(title, subtitle, message)
         }
+    }
+
+    function createConfFile() {
+        const series_name = $.getdata(`series_name@${SCRIPT_NAME}`)
+        const season = $.getdata(`season_no@${SCRIPT_NAME}`)
+        if (!series_name) return
+
+        const path = `${SUBTITLES_DIR}/${series_name}/S${season}/subtitle.conf`
+        if (checkICloudExists(path)) return
+
+        const content = `offset=0
+subsyncer.enabled=false
+        `
+        writeICloud(path, content)
     }
 
     function getSubtitleConfig(key) {
@@ -185,13 +245,13 @@ hostname = *.starz.com
         const confBody = readICloud(`${SUBTITLES_DIR}/${series_name}/S${season}/subtitle.conf`)
         if (!confBody) return null
 
-        const m = new RegExp(`^S${season}E${episode}:${key}=(.+)`, 'im').exec(confBody)
+        const m = new RegExp(String.raw`^\s*S${season}E${episode}:${key}\s*=\s*(.+)`, 'im').exec(confBody)
         if (m) {
-            return m[1]
+            return m[1].trim()
         }
         else {
-            const m0 = new RegExp(`^${key}=(.+)`, 'im').exec(confBody)
-            return m0 ? m0[1] : null
+            const m0 = new RegExp(String.raw`^\s*${key}\s*=\s*(.+)`, 'im').exec(confBody)
+            return m0 && m0[1].trim()
         }
     }
 
@@ -199,11 +259,8 @@ hostname = *.starz.com
         const confBody = readICloud(`${SUBTITLES_DIR}/helper.conf`)
         if (!confBody) return null
 
-        const m = new RegExp(`^${key}=(.+)`, 'im').exec(confBody)
-        if (m) {
-            return m[1]
-        }
-        return null
+        const m = new RegExp(String.raw`^\s*${key}\s*=\s*(.+)`, 'im').exec(confBody)
+        return m && m[1].trim()
     }
 
     function numberWithCommas(x) {
@@ -239,8 +296,11 @@ hostname = *.starz.com
         const season = $.getdata(`season_no@${SCRIPT_NAME}`)
         const episode = $.getdata(`ep_no@${SCRIPT_NAME}`)
         const path = `${SUBTITLES_DIR}/${series_name}/S${season}/S${season}E${episode}.srt`
-        $.log(path)
-        return checkICloudExists(path)
+        const found = checkICloudExists(path)
+        if (!found) {
+            $.log(`subtitle not exist: ${path}`)
+        }
+        return found
     }
 
     function getSubtitle() {
@@ -261,6 +321,15 @@ hostname = *.starz.com
             const content = new TextDecoder().decode(data)
             return content
         }
+    }
+
+    function writeICloud(path, content) {
+        const buffer = new TextEncoder().encode(content)
+        if (!$iCloud.writeFile(buffer, path)) {
+            console.log(`iCloud file write failed, path: ${path}`)
+            return false
+        }
+        return true
     }
 
     function checkICloudExists(path) {
