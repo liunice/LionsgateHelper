@@ -2,7 +2,7 @@
 @author: liunice
 @decription: STARZ/Lionsgate+ iOS 外挂字幕和强制1080p插件
 @created: 2022-11-30
-@updated: 2022-11-30
+@updated: 2022-12-12
 */
 
 /*
@@ -32,6 +32,7 @@ hostname = *.starz.com
     const FILENAME_TV_DB = 'DO_NOT_DELETE_lionsgate_tv.db'
     const TV_DB_THIN_DAYS = 3
     const FN_SUB_SYNCER_DB = 'sub_syncer.db'
+    const PLATFORM_NAME = 'lionsgate+'
 
     if (/\/metadata-service\/play\/.*?\/content\?contentIds=/.test($request.url)) { //\d+&products=starzplay
         try {
@@ -61,7 +62,9 @@ hostname = *.starz.com
         checkPlayingEpisode(episode_id)
 
         // create subtitle.conf if it's not there
-        createConfFile()
+        if (getScriptConfig('auto.create') !== 'false') {
+            createConfFile()
+        }
 
         $.done({ body: JSON.stringify(root) })
     }
@@ -109,15 +112,7 @@ hostname = *.starz.com
         }
         $.log(vttBody)
 
-        // return response
-        var newHeaders = $request.headers
-        newHeaders['Content-Type'] = 'application/vnd.apple.mpegurl'
-        if ($.isQuanX()) {
-            $.done({ body: vttBody, headers: newHeaders, status: 'HTTP/1.1 200 OK' })
-        }
-        else {
-            $.done({ body: vttBody, headers: newHeaders, status: 200 })
-        }
+        $.done({ body: vttBody })
     }
 
     function readTVDB() {
@@ -201,7 +196,14 @@ hostname = *.starz.com
             $.log(e)
         }
         if (!root) {
-            root = { 'manifests': {} }
+            root = {
+                'manifests': {},
+                'platform': PLATFORM_NAME
+            }
+        }
+        else if (root['platform'] && root['platform'] != PLATFORM_NAME) {
+            // 不允许不同平台的数据混在一起
+            return
         }
         else if (root['manifests'][`S${season}E${episode}`]) {
             // 不进行覆盖，防止错误数据写入导致数据混乱
